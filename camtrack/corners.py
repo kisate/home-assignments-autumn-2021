@@ -49,7 +49,7 @@ class _CornerStorageBuilder:
 def _build_impl(frame_sequence: pims.FramesSequence,
                 builder: _CornerStorageBuilder) -> None:
     
-    max_corners = 3000
+    max_corners = 1000
 
     params = {
         "qualityLevel": 0.03,
@@ -78,7 +78,7 @@ def _build_impl(frame_sequence: pims.FramesSequence,
 
         mask = np.ones(image_1.shape).astype(np.uint8)
         for corner in good_corners:
-            cv2.circle(mask, (int(corner[0]), int(corner[1])), 100, 0)
+            cv2.circle(mask, (int(corner[0]), int(corner[1])), 30, 0, -1)
 
         ids = corners.ids[inds]
 
