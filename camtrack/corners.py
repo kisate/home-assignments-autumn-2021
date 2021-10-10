@@ -50,6 +50,7 @@ def _build_impl(frame_sequence: pims.FramesSequence,
                 builder: _CornerStorageBuilder) -> None:
     
     max_corners = 1000
+    free_id = 0
 
     params = {
         "qualityLevel": 0.03,
@@ -70,7 +71,7 @@ def _build_impl(frame_sequence: pims.FramesSequence,
 
     builder.set_corners_at_frame(0, corners)
     for frame, image_1 in enumerate(frame_sequence[1:], 1):
-        new_corners, st, err = cv2.calcOpticalFlowPyrLK((image_0 * 255).astype(np.uint8), (image_1 * 255).astype(np.uint8), corners.points, None, winSize=(30,30), maxLevel=2, criteria = (cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_COUNT,
+        new_corners, st, err = cv2.calcOpticalFlowPyrLK((image_0 * 255).astype(np.uint8), (image_1 * 255).astype(np.uint8), corners.points, None, winSize=(7,7), maxLevel=2, criteria = (cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_COUNT,
                               10, 0.03))
 
         inds = (st == 1).reshape(-1)
@@ -84,9 +85,10 @@ def _build_impl(frame_sequence: pims.FramesSequence,
 
         if sum(inds) < max_corners:
             extra_corners = cv2.goodFeaturesToTrack(image_1, maxCorners=max_corners-sum(inds), mask=mask, **params)
-            starting_id = max(ids) + 1
-            ids = np.concatenate((ids, np.arange(starting_id, starting_id + extra_corners.shape[0]).reshape(-1, 1)), axis=0)
-            good_corners = np.concatenate((good_corners.reshape((-1, 1, 2)), extra_corners), axis=0)
+            if extra_corners is not None:
+                ids = np.concatenate((ids, np.arange(free_id, free_id + extra_corners.shape[0]).reshape(-1, 1)), axis=0)
+                free_id += extra_corners.shape[0]
+                good_corners = np.concatenate((good_corners.reshape((-1, 1, 2)), extra_corners), axis=0)
 
 
         corners = FrameCorners(
