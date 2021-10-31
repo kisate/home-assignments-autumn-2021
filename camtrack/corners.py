@@ -50,7 +50,7 @@ def _build_impl(frame_sequence: pims.FramesSequence,
                 builder: _CornerStorageBuilder) -> None:
     
     max_corners = 1000
-    free_id = 0
+    free_id = max_corners
 
     params = {
         "qualityLevel": 0.03,
