@@ -28,22 +28,29 @@ from _camtrack import (
 
 import cv2
 
-def calc_new_view_mat(points3d, old_corners, new_corners, intrinsic_mat, prev_view_mat, bad_ids):
-    print(points3d[0].shape)
+def calc_new_view_mat(points3d, old_corners, new_corners, intrinsic_mat, prev_view_mat, id_qualities):
     _, (possible_idx1, possible_idx2) = snp.intersect(points3d[1], new_corners.ids.reshape(-1), indices=True)
 
     _, rvec, tvec, inliers = cv2.solvePnPRansac(points3d[0][possible_idx1], new_corners.points[possible_idx2], intrinsic_mat, None, reprojectionError=15)
     view_mat = rodrigues_and_translation_to_view_mat3x4(rvec, tvec)
 
     new_bad_ids = np.setdiff1d(points3d[1][possible_idx1], points3d[1][possible_idx1][inliers])
-    bad_ids = snp.merge(bad_ids, new_bad_ids, duplicates=snp.DROP)
+
+    if new_bad_ids.shape[0] > 0:
+        id_qualities = np.pad(id_qualities, (0, max(0, new_bad_ids.max() - id_qualities.shape[0] + 1)))
+        id_qualities[new_bad_ids] += 1
+
+    # if points3d[1][possible_idx1].shape[0] > 20:
+    #     bad_ids = snp.merge(bad_ids, new_bad_ids, duplicates=snp.DROP)
     triang_params = TriangulationParameters(max_reprojection_error=15, min_triangulation_angle_deg=0, min_depth=0)
 
     correspondences = build_correspondences(old_corners, new_corners)
     _points3d = triangulate_correspondences(correspondences, prev_view_mat, view_mat, intrinsic_mat, triang_params)
     
     new_bad_ids = np.setdiff1d(correspondences[0], _points3d[1])
-    bad_ids = snp.merge(bad_ids, new_bad_ids, duplicates=snp.DROP)
+    if new_bad_ids.shape[0] > 0:
+        id_qualities = np.pad(id_qualities, (0, max(0, new_bad_ids.max() - id_qualities.shape[0] + 1)))
+        id_qualities[new_bad_ids] += 1
 
 
     new_ids, (inds1, inds2) = snp.merge(_points3d[1], points3d[1], indices=True, duplicates=snp.DROP)
@@ -52,12 +59,14 @@ def calc_new_view_mat(points3d, old_corners, new_corners, intrinsic_mat, prev_vi
     new_points3d[inds1] = _points3d[0]  
     new_points3d[inds2] = points3d[0]
     
+    bad_ids = np.argwhere(id_qualities > 1).reshape(-1)
+
     _, (bad_idx, _) = snp.intersect(new_ids, bad_ids, indices=True)
 
     new_points3d = np.delete(new_points3d, bad_idx, axis=0)
     new_ids = np.delete(new_ids, bad_idx, axis=0)
 
-    return view_mat, (new_points3d, new_ids), bad_ids
+    return view_mat, (new_points3d, new_ids), id_qualities
 
 def track_and_calc_colors(camera_parameters: CameraParameters,
                           corner_storage: CornerStorage,
@@ -77,6 +86,7 @@ def track_and_calc_colors(camera_parameters: CameraParameters,
     correspondences = build_correspondences(corner_storage[known_view_1[0]], corner_storage[known_view_2[0]])
     triang_params = TriangulationParameters(max_reprojection_error=15, min_triangulation_angle_deg=0, min_depth=0)
     points3d = triangulate_correspondences(correspondences, pose_to_view_mat3x4(known_view_1[1]), pose_to_view_mat3x4(known_view_2[1]), intrinsic_mat, triang_params)
+    id_qualities = np.array([], dtype=int)
     bad_ids = np.array([], dtype=int)
 
     frame_count = len(corner_storage)
@@ -96,15 +106,23 @@ def track_and_calc_colors(camera_parameters: CameraParameters,
             if view_mats[i] is None:
                 for j in range(i+min_dist, min(frame_count, i+max_dist)):
                     if view_mats[j] is not None:
-                        view_mats[i], points3d, bad_ids  = calc_new_view_mat(points3d, corner_storage[j], corner_storage[i], intrinsic_mat, view_mats[j], bad_ids)
-                        not_processed_idx.remove(i)
-                        break
+                        try:
+                            view_mats[i], points3d, id_qualities  = calc_new_view_mat(points3d, corner_storage[j], corner_storage[i], intrinsic_mat, view_mats[j], id_qualities)
+                            not_processed_idx.remove(i)
+                            break
+                        except cv2.error:
+                            points3d = triangulate_correspondences(correspondences, pose_to_view_mat3x4(known_view_1[1]), pose_to_view_mat3x4(known_view_2[1]), intrinsic_mat, triang_params)
+                            id_qualities = id_qualities = np.array([], dtype=int)
                 if view_mats[i] is None:
                     for j in range(i-min_dist, max(0, i-max_dist), -1):
                         if view_mats[j] is not None:
-                            view_mats[i], points3d, bad_ids  = calc_new_view_mat(points3d, corner_storage[j], corner_storage[i], intrinsic_mat, view_mats[j], bad_ids)
-                            not_processed_idx.remove(i)
-                            break
+                            try:
+                                view_mats[i], points3d, id_qualities  = calc_new_view_mat(points3d, corner_storage[j], corner_storage[i], intrinsic_mat, view_mats[j], id_qualities)
+                                not_processed_idx.remove(i)
+                                break
+                            except cv2.error:
+                                points3d = triangulate_correspondences(correspondences, pose_to_view_mat3x4(known_view_1[1]), pose_to_view_mat3x4(known_view_2[1]), intrinsic_mat, triang_params)
+                                id_qualities = id_qualities = np.array([], dtype=int)
 
     point_cloud_builder = PointCloudBuilder(points3d[1],
                                             points3d[0])
