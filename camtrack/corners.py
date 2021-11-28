@@ -72,7 +72,7 @@ def _build_impl(frame_sequence: pims.FramesSequence,
     builder.set_corners_at_frame(0, corners)
     for frame, image_1 in enumerate(frame_sequence[1:], 1):
         new_corners, st, err = cv2.calcOpticalFlowPyrLK((image_0 * 255).astype(np.uint8), (image_1 * 255).astype(np.uint8), corners.points, None, winSize=(7,7), maxLevel=2, criteria = (cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_COUNT,
-                              10, 0.03))
+                              10, 0.005))
 
         inds = (st == 1).reshape(-1)
         good_corners = new_corners[inds]
