@@ -33,13 +33,12 @@ from random import shuffle
 import cv2
 
 triang_params = TriangulationParameters(
-    max_reprojection_error=7, min_triangulation_angle_deg=1.0, min_depth=0.11)
+    max_reprojection_error=3, min_triangulation_angle_deg=1.0, min_depth=0.11)
 
-def calc_new_view_mat(points3d, old_corners, new_corners, intrinsic_mat, prev_view_mat, id_qualities, min_quality):
+def calc_new_view_mat(points3d, old_corners, new_corners, intrinsic_mat, prev_view_mat, bad_ids):
     possible_ids = snp.intersect(
         points3d[1], new_corners.ids.reshape(-1))
 
-    bad_ids = np.argwhere(id_qualities > min_quality).reshape(-1)
     bad_ids, (bad_idx, _) = snp.intersect(possible_ids, bad_ids, indices=True)
 
     good_ids = np.delete(possible_ids, bad_idx)
@@ -65,11 +64,6 @@ def calc_new_view_mat(points3d, old_corners, new_corners, intrinsic_mat, prev_vi
     new_bad_ids = np.setdiff1d(
         points3d[1][possible_idx1], points3d[1][possible_idx1][inliers])
 
-    if new_bad_ids.shape[0] > 0:
-        id_qualities = np.pad(id_qualities, (0, max(
-            0, new_bad_ids.max() - id_qualities.shape[0] + 1)))
-        id_qualities[new_bad_ids] += 1
-
     # if points3d[1][possible_idx1].shape[0] > 20:
     #     bad_ids = snp.merge(bad_ids, new_bad_ids, duplicates=snp.DROP)
         
@@ -77,11 +71,9 @@ def calc_new_view_mat(points3d, old_corners, new_corners, intrinsic_mat, prev_vi
     _points3d = triangulate_correspondences(
         correspondences, prev_view_mat, view_mat, intrinsic_mat, triang_params)
 
-    new_bad_ids = np.setdiff1d(correspondences[0], _points3d[1])
-    if new_bad_ids.shape[0] > 0:
-        id_qualities = np.pad(id_qualities, (0, max(
-            0, new_bad_ids.max() - id_qualities.shape[0] + 1)))
-        id_qualities[new_bad_ids] += 1
+    _new_bad_ids = np.setdiff1d(correspondences[0], _points3d[1])
+    new_bad_ids = snp.merge(new_bad_ids, _new_bad_ids, duplicates=snp.DROP)
+    new_bad_ids = snp.merge(new_bad_ids, bad_ids, duplicates=snp.DROP)
 
     new_ids, (inds1, inds2) = snp.merge(
         _points3d[1], points3d[1], indices=True, duplicates=snp.DROP)
@@ -90,14 +82,12 @@ def calc_new_view_mat(points3d, old_corners, new_corners, intrinsic_mat, prev_vi
     new_points3d[inds1] = _points3d[0]
     new_points3d[inds2] = points3d[0]
 
-    bad_ids = np.argwhere(id_qualities > min_quality).reshape(-1)
-
     # _, (bad_idx, _) = snp.intersect(new_ids, bad_ids, indices=True)
 
     # new_points3d = np.delete(new_points3d, bad_idx, axis=0)
     # new_ids = np.delete(new_ids, bad_idx, axis=0)
 
-    return view_mat, (new_points3d, new_ids), id_qualities, len(_points3d[1])
+    return view_mat, (new_points3d, new_ids), new_bad_ids, len(_points3d[1])
 
 
 def build_views(corners1: FrameCorners, corners2: FrameCorners, intrinsic_mat: np.ndarray, params):
@@ -178,6 +168,8 @@ def initiallize(
     return best_frames
 
 
+from tqdm import tqdm
+
 def track_and_calc_colors(camera_parameters: CameraParameters,
                           corner_storage: CornerStorage,
                           frame_sequence_path: str,
@@ -209,7 +201,7 @@ def track_and_calc_colors(camera_parameters: CameraParameters,
     id_qualities = np.array([], dtype=int)
 
     min_dist = 1
-    max_dist = 60
+    max_dist = 70
 
     not_processed_idx = set(range(frame_count))
     not_processed_idx.remove(known_view_1[0])
@@ -221,40 +213,32 @@ def track_and_calc_colors(camera_parameters: CameraParameters,
     best_cnts = [0]*len(view_mats)
     best_cnts[known_view_1[0]] = 1e9
     best_cnts[known_view_2[0]] = 1e9
+    bad_ids = [np.empty(0, dtype=int)]*len(view_mats)
 
     while not_processed_idx:
-        processing_order = list(not_processed_idx)
-        shuffle(processing_order)
+        processing_order = sorted(list(not_processed_idx))
         print(processing_order)
         print(best_cnts)
-        for i in processing_order:
+        for i in tqdm(processing_order):
             best_res = None
             other_idx = list(range(i+min_dist, min(frame_count, i+max_dist))) + list(range( max(0, i-max_dist),i-min_dist))
-            processed_cnt = 0
             for j in other_idx:
                 if view_mats[j] is not None and best_cnts[j] > 200:
-                    processed_cnt += 1
                     try:
                         res = calc_new_view_mat(
-                            points3d, corner_storage[j], corner_storage[i], intrinsic_mat, view_mats[j], id_qualities, frame_errors[i])
+                            points3d, corner_storage[j], corner_storage[i], intrinsic_mat, view_mats[j], bad_ids[j])
                         if not best_res or res[3] > best_res[3]:
                             best_res = res
                     except cv2.error:
                         # id_qualities = np.clip(id_qualities - 1, 0, 1000)
                         pass
-            
-            processed_part = processed_cnt / len(other_idx)
 
             if best_res:
                 best_cnts[i] = best_res[3]
 
             if best_res and best_res[3] > 50:
-                view_mats[i], points3d, id_qualities, _ = best_res
-                id_qualities = np.clip(id_qualities, 0, 10)
+                view_mats[i], points3d, bad_ids[i], _ = best_res
                 not_processed_idx.remove(i)
-            else:
-                if processed_part > 0.3:
-                    frame_errors[i] += 1
 
     point_cloud_builder = PointCloudBuilder(points3d[1],
                                             points3d[0])
